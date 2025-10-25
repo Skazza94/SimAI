@@ -23,7 +23,7 @@
 #include "astra-sim/system/MockNcclLog.h"
 using namespace std;
 namespace MockNccl {
-  MockNcclGroup::MockNcclGroup(int _ngpus,int _gpus_per_nodes,int _TP_size,int _DP_size,int _PP_size,int _EP_size,int _DP_EP_size,std::vector<int>_NVSwitch,GPUType _gpu_type):g_flow_id(0),gpu_type(_gpu_type){
+  MockNcclGroup::MockNcclGroup(int _ngpus,int _gpus_per_nodes,int _TP_size,int _DP_size,int _PP_size,int _EP_size,int _DP_EP_size,std::vector<int>_NVSwitch,GPUType _gpu_type, uint32_t dc_num):g_flow_id(0),gpu_type(_gpu_type),dc_num(dc_num){
     /*init groups
     */
     MockNcclLog *NcclLog = MockNcclLog::getInstance();
@@ -49,6 +49,7 @@ namespace MockNccl {
     // init TP group 
     if(_TP_size>1){
       std::set<int>TPnodes;
+      int node_idx = -1;
       for(int i =0;i<TP_nums;i++){
         ranks.clear();
         TPnodes.clear();
@@ -56,7 +57,7 @@ namespace MockNccl {
           int rank = i*_TP_size+j;
           ranks.push_back(rank);
           GroupIndex[std::make_pair(rank, TP)] = all_group_idx;
-          int node_idx = rank / _gpus_per_nodes;
+          node_idx = rank / _gpus_per_nodes;
           TPnodes.insert(node_idx);
         }
         NVSwitchs.clear();
@@ -71,23 +72,49 @@ namespace MockNccl {
     // init DP group
     if(_DP_size>1){
       std::set<int>DPnodes;
+      int node_idx = -1;
       for(int i =0;i<DP_nums;i++){
-        ranks.clear();
-        DPnodes.clear();
-        for(int j =0;j<_DP_size;j++){
-          int rank = i+j*DP_nums;
-          ranks.push_back(rank);
-          GroupIndex[std::make_pair(rank, DP)] = all_group_idx;
-          int node_idx = rank/_gpus_per_nodes;
-          DPnodes.insert(node_idx);
+        for (int dc=0; dc < dc_num; dc++){
+          ranks.clear();
+          DPnodes.clear();
+          for(int j =0;j<_DP_size/dc_num;j++){
+            int rank = i+j*DP_nums + dc*( _ngpus/dc_num );
+            ranks.push_back(rank);
+            GroupIndex[std::make_pair(rank, DP)] = all_group_idx;
+            node_idx = rank/_gpus_per_nodes;
+            DPnodes.insert(node_idx);
+          }
+          NVSwitchs.clear();
+          for(int idx:DPnodes){
+            NVSwitchs.push_back(_NVSwitch[idx]);
+            GroupIndex[std::make_pair(_NVSwitch[idx],DP)] = all_group_idx;
+          }
+          AllGroups[all_group_idx]=GroupInfo(all_group_idx,DP,DPnodes.size(),_DP_size/dc_num,ranks,NVSwitchs);
+          all_group_idx ++;
         }
-        NVSwitchs.clear();
-        for(int idx:DPnodes){
-          NVSwitchs.push_back(_NVSwitch[idx]);
-          GroupIndex[std::make_pair(_NVSwitch[idx],DP)] = all_group_idx;
+      }
+      
+      if (dc_num > 1) {
+        int offset = _ngpus/dc_num;
+        for (int i = 0; i<_DP_size/dc_num; i++) {
+          ranks.clear();
+          DPnodes.clear();
+          for (int dc = 0; dc < dc_num; dc++) {
+            int rank = i*_TP_size + dc*offset;
+            ranks.push_back(rank);
+            GroupIndex[std::make_pair(rank, HDP)] = all_group_idx;
+            node_idx = rank/_gpus_per_nodes;
+            DPnodes.insert(node_idx);
+          }
+          NVSwitchs.clear();
+          for(int idx:DPnodes){
+            NVSwitchs.push_back(_NVSwitch[idx]);
+            GroupIndex[std::make_pair(_NVSwitch[idx],HDP)] = all_group_idx;
+          }
+          AllGroups[all_group_idx]=GroupInfo(all_group_idx,HDP,DPnodes.size(),dc_num,ranks,NVSwitchs);
+          
+          all_group_idx++;
         }
-        AllGroups[all_group_idx]=GroupInfo(all_group_idx,DP,DPnodes.size(),_DP_size,ranks,NVSwitchs);
-        all_group_idx ++;
       }
     }
     // init PP group
@@ -303,6 +330,9 @@ namespace MockNccl {
       case DP_EP:
         flow_model_name = "DP_EP";
         break;
+      case HDP:
+        flow_model_name = "HDP";
+        break;
       default:
         break;
     }
@@ -310,8 +340,9 @@ namespace MockNccl {
     if(flow_models.count(flow_model_name)){
       FlowName2nums[flow_model_name] ++;
       std::shared_ptr<void> presult;
-      if(flow_models[flow_model_name].count(rank)!=0)
+      if(flow_models[flow_model_name].count(rank)!=0) {
         presult = flow_models[flow_model_name][rank];
+      }
       else{
         presult = nullptr;
       }
@@ -660,8 +691,8 @@ namespace MockNccl {
   }
 
   std::map<int,std::shared_ptr<FlowModels>> MockNcclGroup::genAllReduceFlowModels(GroupType type , int rank,uint64_t data_size){
-    ncclInfo* ncc_info = get_algo_proto_info(type,rank,AstraSim::ComType::All_Reduce,data_size);
-    switch (ncc_info->algorithm) {
+    ncclInfo* nccl_info = get_algo_proto_info(type,rank,AstraSim::ComType::All_Reduce,data_size);
+    switch (nccl_info->algorithm) {
       case NCCL_ALGO_TREE:
       case NCCL_ALGO_RING:
         return genAllReduceRingFlowModels(type, rank, data_size);
@@ -2051,6 +2082,9 @@ namespace MockNccl {
       break;
     case DP_EP:
       ncclInfoName = "DP_EP";
+      break;
+    case HDP:
+      ncclInfoName = "HDP";
       break;
     default:
       break;

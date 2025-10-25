@@ -41,7 +41,7 @@ class MockNcclLog {
     const char* logLevelEnv = std::getenv("AS_LOG_LEVEL");
     logLevel = logLevelEnv ? static_cast<NcclLogLevel>(std::atoi(logLevelEnv))
                            : NcclLogLevel::INFO;
-    logfile.open(LogName, std::ios::app);
+    logfile.open(LogName);
   }
   std::string getCurrentTime() {
     auto now = std::chrono::system_clock::now();

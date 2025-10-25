@@ -870,6 +870,8 @@ char* comtype_to_coll(ComType comtype) {
             return "all_reduce_all_to_all";
         case ComType::All_Reduce_NVLS:
             return "all_reduce_nvls";
+        case ComType::All_ReduceHDP:
+            return "allreduce";
         default:
             return "unknown";
     }
@@ -1082,7 +1084,8 @@ void Layer::issue_forward_pass_comm(
     }
     if (generator->id == 0) {
       std::cout << "info: all-reduce forward pass collective issued for layer: "
-                << id << ",";
+                << id << ","
+                << " parallelism type: " << fwd_pass_group_type << ",";
       print_involved_dimensions(fwd_pass_comm_involved_dimensions);
     }
   } else if (fwd_pass_comm_type == ComType::All_to_All) {
@@ -1232,6 +1235,13 @@ void Layer::issue_input_grad_comm(
   DataSet* ig = NULL;
   ig_barrier = barrier;
   collective_counter++;
+
+  if (generator->id % generator->workload->model_parallel_npu_group !=0 || generator->id >= generator->all_gpus[0]) {
+    if (input_grad_comm_type == ComType::All_ReduceHDP) {
+      input_grad_comm_type = ComType::None;
+      std::cout << "Changed input_grad_comm_type for node " << generator->id << " from All_ReduceHDP to " << comtype_to_coll(input_grad_comm_type) << std::endl;
+    }
+  }
   if (input_grad_comm_type == ComType::All_Reduce) {
     #ifdef PHY_MTP
         ig = generator->generate_all_reduce(
@@ -1264,6 +1274,39 @@ void Layer::issue_input_grad_comm(
     if (generator->id == 0) {
       std::cout << "info: all-reduce input grad collective issued for layer: "
                 << id << ",";
+      print_involved_dimensions(input_grad_comm_involved_dimensions);
+    }
+  } else if(input_grad_comm_type == ComType::All_ReduceHDP) {
+    #ifdef PHY_MTP
+        ig = generator->generate_all_reduce(
+        input_grad_comm_size,
+        input_grad_comm_involved_dimensions,
+        pref_scheduling,
+        layer_num,
+        EventType::Input_Grad_Comm_Finished,
+        this);
+    #else
+    ig = generator->generate_all_reduce(
+        input_grad_comm_size,
+        input_grad_comm_involved_dimensions,
+        pref_scheduling,
+        layer_num);
+    #endif
+    if (!ig->active) {
+      if (generator->id == 0) {
+        std::cout
+            << "info: all dims disabled, no input grad collective for layer: "
+            << id << std::endl;
+      }
+      collective_counter--;
+      delete ig;
+      if (barrier == CollectiveBarrier::Blocking) {
+        workload->call(EventType::General, NULL);
+      }
+      return;
+    }
+    if (generator->id == 0) {
+      std::cout << "info: all-reduce HDP input grad collective issued for node: " << generator->id << " layer: " << id << std::endl;
       print_involved_dimensions(input_grad_comm_involved_dimensions);
     }
   } else if (input_grad_comm_type == ComType::All_to_All) {

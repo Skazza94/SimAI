@@ -23,6 +23,7 @@
 #include "ns3/csma-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/network-module.h"
+#include "ns3/random-variable-stream.h"
 #include "entry.h"
 #include <execinfo.h>
 #include <fstream>
@@ -47,7 +48,7 @@ using namespace std;
 using namespace ns3;
 
 extern std::map<std::pair<std::pair<int, int>,int>, AstraSim::ncclFlowTag> receiver_pending_queue;
-extern uint32_t node_num, switch_num, link_num, trace_num, nvswitch_num, gpus_per_server;
+extern uint32_t node_num, switch_num, link_num, trace_num, nvswitch_num, gpus_per_server, dc_num;
 extern GPUType gpu_type;
 extern std::vector<int>NVswitchs;
 
@@ -258,6 +259,9 @@ static int user_param_prase(int argc,char * argv[],struct user_param* user_param
 }
 
 int main(int argc, char *argv[]) {
+  srand(1234);
+  RngSeedManager::SetSeed(12345);
+
   struct user_param user_param;
   MockNcclLog::set_log_name("SimAI.log");
   MockNcclLog* NcclLog = MockNcclLog::getInstance();
@@ -314,7 +318,8 @@ int main(int argc, char *argv[]) {
         gpu_type,
         {gpu_num},
         NVswitchs,
-        gpus_per_server
+        gpus_per_server,
+        dc_num
     );
     systems[j ]->nvswitch_id = node2nvswitch[j];
     systems[j ]->num_gpus = nodes_num - nvswitch_num;

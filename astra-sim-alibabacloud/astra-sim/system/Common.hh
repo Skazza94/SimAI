@@ -25,7 +25,8 @@ enum class ComType {
   All_Reduce,
   All_to_All,
   All_Reduce_All_to_All,
-  All_Reduce_NVLS
+  All_Reduce_NVLS,
+  All_ReduceHDP
 };
 enum class CollectiveOptimization { Baseline, LocalBWAware };
 enum class CollectiveImplementationType {

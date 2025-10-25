@@ -88,7 +88,7 @@ uint32_t enable_trace = 1;
 
 uint32_t buffer_size = 16;
 
-uint32_t node_num, switch_num, link_num, trace_num, nvswitch_num, gpus_per_server;
+uint32_t node_num, switch_num, link_num, trace_num, nvswitch_num, gpus_per_server, dc_num;
 GPUType gpu_type;
 std::vector<int>NVswitchs;
 
@@ -101,11 +101,15 @@ string qlen_mon_file;
 string bw_mon_file;
 string rate_mon_file;
 string cnp_mon_file;
+string drop_mon_file;
 string total_flow_file = "/root/astra-sim/extern/network_backend/ns3-interface/simulation/monitor_output/";
 FILE* total_flow_output = nullptr;
 
 unordered_map<uint64_t, uint32_t> rate2kmax, rate2kmin;
 unordered_map<uint64_t, double> rate2pmax;
+
+uint32_t lossy_class = 0;
+double max_pfc_delay = 0.0005;
 
 std::ifstream topof, flowf, tracef;
 
@@ -213,6 +217,14 @@ void monitor_qp_cnp_number(FILE* cnp_output, NodeContainer *n){
 	}
 	Simulator::Schedule(MicroSeconds(qp_mon_interval), &monitor_qp_cnp_number, cnp_output, n);
 }
+void monitor_ingress_drop(FILE* drop_output, uint8_t type, uint32_t node_id, uint32_t port, uint32_t qIndex, uint64_t bytes, uint64_t thresh, uint32_t psize) {
+    fprintf(drop_output, "%lu, %u, %u, %u, %s, %u, %lu, %lu, %u\n", Simulator::Now().GetTimeStep(), node_id, port, qIndex, "ig", type, bytes, thresh, psize);
+		fflush(drop_output);
+}
+void monitor_egress_drop(FILE* drop_output, uint8_t type, uint32_t node_id, uint32_t port, uint32_t qIndex, uint64_t bytes, uint64_t thresh, uint32_t psize) {
+    fprintf(drop_output, "%lu, %u, %u, %u, %s, %u, %lu, %lu, %u\n", Simulator::Now().GetTimeStep(), node_id, port, qIndex, "eg", type, bytes, thresh, psize);
+		fflush(drop_output);
+}
 void schedule_monitor(){
 	FILE* qlen_output = fopen(qlen_mon_file.c_str(), "w"); 
 	assert(qlen_output != nullptr);
@@ -237,6 +249,18 @@ void schedule_monitor(){
 	fprintf(cnp_output, "%s, %s, %s, %s, %s, %s, %s\n", "time", "src", "dst", "sport", "dport", "size", "cnp_number");
 	fflush(cnp_output);
 	Simulator::Schedule(MicroSeconds(mon_start), &monitor_qp_cnp_number, cnp_output, &n);
+
+	FILE* drop_output = fopen(drop_mon_file.c_str(), "w");
+	assert(drop_output != nullptr);
+	fprintf(drop_output, "%s, %s, %s, %s, %s, %s, %s, %s, %s\n", "time", "sw_id", "port_id", "q_id", "buf", "type", "bytes", "thresh", "pkt_size");
+	fflush(drop_output);
+  for (uint32_t i = 0; i < node_num; i++) {
+    if (n.Get(i)->GetNodeType() == 1) { 
+      Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
+      sw->m_mmu->TraceConnectWithoutContext("IngressDropTrace", MakeBoundCallback(&monitor_ingress_drop, drop_output));
+      sw->m_mmu->TraceConnectWithoutContext("EgressDropTrace", MakeBoundCallback(&monitor_egress_drop, drop_output));
+    }
+  }
 }
 
 void CalculateRoute(Ptr<Node> host) {
@@ -626,16 +650,14 @@ bool ReadConf(string network_topo,string network_conf) {
         conf >> buffer_size;
       } else if (key.compare("QLEN_MON_FILE") == 0){
 				conf >> qlen_mon_file;
-				qlen_mon_file = get_output_file_name(network_conf, qlen_mon_file);
 			}else if(key.compare("BW_MON_FILE") == 0){
 				conf >> bw_mon_file;
-				bw_mon_file = get_output_file_name(network_conf, bw_mon_file);
 			}else if(key.compare("RATE_MON_FILE") == 0){
 				conf >> rate_mon_file;
-				rate_mon_file = get_output_file_name(network_conf, rate_mon_file);
 			}else if(key.compare("CNP_MON_FILE") == 0){
 				conf >> cnp_mon_file;
-				cnp_mon_file = get_output_file_name(network_conf, cnp_mon_file);
+			}else if(key.compare("DROP_MON_FILE") == 0){
+				conf >> drop_mon_file;
 			}else if (key.compare("MON_START") == 0){
 				conf >> mon_start;
 			}else if (key.compare("MON_END") == 0){
@@ -658,6 +680,10 @@ bool ReadConf(string network_topo,string network_conf) {
         conf >> pint_log_base;
       } else if (key.compare("PINT_PROB") == 0) {
         conf >> pint_prob;
+      } else if (key.compare("LOSSY_CLASS") == 0) {
+        conf >> lossy_class;
+      } else if (key.compare("MAX_PFC_DELAY") == 0) {
+        conf >> max_pfc_delay;
       }
       fflush(stdout);
     }
@@ -699,7 +725,7 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
   string gpu_type_str;
 
   topof >> node_num >> gpus_per_server >> nvswitch_num >> switch_num >>
-      link_num >> gpu_type_str;
+      link_num >> gpu_type_str >> dc_num;
   flowf >> flow_num;
   tracef >> trace_num;
   if(gpu_type_str == "A100"){
@@ -842,7 +868,8 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
   for (uint32_t i = 0; i < node_num; i++) {
     if (n.Get(i)->GetNodeType() == 1) { 
       Ptr<SwitchNode> sw = DynamicCast<SwitchNode>(n.Get(i));
-      uint32_t shift = 3; 
+      
+      uint64_t total_headroom = 0;
 
       for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
         Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
@@ -853,42 +880,86 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
                       "must set kmax for each link speed");
         NS_ASSERT_MSG(rate2pmax.find(rate) != rate2pmax.end(),
                       "must set pmax for each link speed");
-        sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate],
-                             rate2pmax[rate]);
-        uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())
-                             ->GetDelay()
-                             .GetTimeStep();
-        uint32_t headroom = rate * delay / 8 / 1000000000 * 3;
-        sw->m_mmu->ConfigHdrm(j, headroom);
-        sw->m_mmu->pfc_a_shift[j] = shift;
-        while (rate > nic_rate && sw->m_mmu->pfc_a_shift[j] > 0) {
-          sw->m_mmu->pfc_a_shift[j]--;
-          rate /= 2;
+        sw->m_mmu->ConfigEcn(j, rate2kmin[rate], rate2kmax[rate], rate2pmax[rate]);
+
+        uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetTimeStep();
+
+        // Set PFC headroom, only if the delay is less than "max_pfc_delay"
+        if (delay < max_pfc_delay)
+        {
+          uint32_t headroom = rate * delay / 8 / 1000000000 * 3;
+
+          for (uint32_t q = 0; q < 8; q++) 
+          {
+            if (q == 3 || q == 0) // lossless
+            { 
+              sw->m_mmu->SetAlphaIngress(1, j, q);
+              sw->m_mmu->SetAlphaEgress(10000, j, q);
+              sw->m_mmu->SetHeadroom(headroom, j, q);
+              total_headroom += headroom;
+            }
+            else // lossy 
+            { 
+              sw->m_mmu->SetAlphaIngress(10000, j, q);
+              sw->m_mmu->SetAlphaEgress(1, j, q);
+            }
+          }
         }
+        else
+        {
+            std::cout << "[WARNING] Headroom not set on port="
+                           << j << " of device " << sw->GetId()
+                           << " since delay is " << delay << " > " << max_pfc_delay << std::endl;
+
+            for (uint32_t q = 0; q < 8; q++) 
+            {
+              sw->m_mmu->SetHeadroom(0, j, q);
+              sw->m_mmu->SetAlphaIngress(10000, j, q);
+              sw->m_mmu->SetAlphaEgress(10000, j, q); 
+            }
+        }        
       }
-      sw->m_mmu->ConfigNPort(sw->GetNDevices() - 1);
-      sw->m_mmu->ConfigBufferSize(buffer_size * 1024 * 1024);
+
+      sw->m_mmu->SetPortCount(sw->GetNDevices() - 1);
+      sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
+      sw->m_mmu->SetIngressPool((buffer_size * 1024 * 1024) - total_headroom);
+      sw->m_mmu->SetSharedPool((buffer_size * 1024 * 1024) - total_headroom);
+      sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
+      sw->m_mmu->SetEgressLossyPool((buffer_size * 1024 * 1024 - total_headroom) * 0.8);
       sw->m_mmu->node_id = sw->GetId();
     } else if(n.Get(i)->GetNodeType() == 2){ 
 			Ptr<NVSwitchNode> sw = DynamicCast<NVSwitchNode>(n.Get(i));
+
       uint32_t shift = 3; 
+      uint64_t total_headroom = 0;
+
       for (uint32_t j = 1; j < sw->GetNDevices(); j++) {
         Ptr<QbbNetDevice> dev = DynamicCast<QbbNetDevice>(sw->GetDevice(j));
         uint64_t rate = dev->GetDataRate().GetBitRate();
-        uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())
-                             ->GetDelay()
-                             .GetTimeStep();
+        uint64_t delay = DynamicCast<QbbChannel>(dev->GetChannel())->GetDelay().GetTimeStep();
         uint32_t headroom = rate * delay / 8 / 1000000000 * 3;
-        sw->m_mmu->ConfigHdrm(j, headroom);
-        sw->m_mmu->pfc_a_shift[j] = shift;
-        while (rate > nic_rate && sw->m_mmu->pfc_a_shift[j] > 0) {
-          sw->m_mmu->pfc_a_shift[j]--;
-          rate /= 2;
+
+        for (uint32_t q : {0u, 3u, 4u}) {
+          sw->m_mmu->SetHeadroom(headroom, j, q);
+          total_headroom += headroom;
+
+          shift = 3;
+          uint64_t temp_rate = rate;
+          sw->m_mmu->SetAlphaIngress(1.0 / (1 << shift), j, q);
+          sw->m_mmu->SetAlphaEgress(10000, j, q);
+          while (temp_rate > nic_rate && sw->m_mmu->alphaIngress[j][q] < 1) {
+            shift--;
+            sw->m_mmu->SetAlphaIngress(1.0 / (1 << shift), j, q);
+            temp_rate /= 2;
+          }
         }
       }
-			sw->m_mmu->ConfigNPort(sw->GetNDevices()-1);
-			sw->m_mmu->ConfigBufferSize(buffer_size* 1024 * 1024);
-			sw->m_mmu->node_id = sw->GetId();
+      
+      sw->m_mmu->SetPortCount(sw->GetNDevices() - 1);
+      sw->m_mmu->SetBufferPool(buffer_size * 1024 * 1024);
+      sw->m_mmu->SetIngressPool(buffer_size * 1024 * 1024 - total_headroom);
+      sw->m_mmu->SetEgressLosslessPool(buffer_size * 1024 * 1024);
+      sw->m_mmu->node_id = sw->GetId();
 		}
   }
 
@@ -910,6 +981,8 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
       rdmaHw->SetAttribute("L2BackToZero", BooleanValue(l2_back_to_zero));
       rdmaHw->SetAttribute("L2ChunkSize", UintegerValue(l2_chunk_size));
       rdmaHw->SetAttribute("L2AckInterval", UintegerValue(l2_ack_interval));
+      rdmaHw->SetAttribute("L2Retransmission", UintegerValue(1));
+      rdmaHw->SetAttribute("RetransmissionTimeout", DoubleValue(1000100));
       rdmaHw->SetAttribute("CcMode", UintegerValue(cc_mode));
       rdmaHw->SetAttribute("RateDecreaseInterval",
                            DoubleValue(rate_decrease_interval));
@@ -1031,5 +1104,7 @@ void SetupNetwork(void (*qp_finish)(FILE *, Ptr<RdmaQueuePair>),void (*send_fini
                         &TakeDownLink, n, n.Get(link_down_A),
                         n.Get(link_down_B));
   }
+
+  schedule_monitor();
 }
 #endif

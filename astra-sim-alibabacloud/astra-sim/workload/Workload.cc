@@ -798,18 +798,18 @@ void Workload::iterate_hybrid_parallel_Transformer_fwd_in_bckwd() {
       return;
     }
     if (delay_loaded == false) {
-      counter = layers[index]->get_fwd_pass_compute();
+      counter = layers[index]->get_fwd_pass_compute(); // wait for FP compute time
       delay_loaded = true;
     }
-    if (counter > 0) {
+    if (counter > 0) { // still have compute time to wait
       generator->try_register_event(
           this, EventType::Workload_Wait, NULL, counter);
       return;
     }
-    if (!collective_issued) {
+    if (!collective_issued) { // issue fwd comm if not yet issued
       collective_issued = true;
       if(layers[index]->fwd_pass_comm_size < 4096 && layers[index]->fwd_pass_comm_size >0){
-        layers[index]->fwd_pass_comm_size = 4096;
+        layers[index]->fwd_pass_comm_size = 4096; // minimum NCCL message size is 4KB
       }
       layers[index]->issue_forward_pass_comm(
           SchedulingPolicy::None, CollectiveBarrier::Blocking);
@@ -1382,6 +1382,9 @@ bool Workload::initialize_workload(std::string name) {
         ig_group_type = MockNccl::GroupType::EP;
       } else if(ig_comm_type_s == "ALLREDUCE_DP_EP"){
         ig_group_type = MockNccl::GroupType::DP_EP;
+      } else if(ig_comm_type_s == "ALLREDUCE_HDP"){
+        ig_group_type = MockNccl::GroupType::HDP;
+        ig_type = ComType::All_ReduceHDP;
       } else{
         ig_group_type = MockNccl::GroupType::NONE;
       }
@@ -1521,7 +1524,7 @@ bool Workload::initialize_workload(std::string name) {
         ig_type,
         ig_group_type,
         ig_comm_size * generator->comm_scale,
-        selected_involved_dimensions["ig"],
+        (ig_group_type == MockNccl::GroupType::HDP) ? selected_involved_dimensions["wg"] : selected_involved_dimensions["ig"],
         wg_compute_time * generator->compute_scale,
         wg_type,
         wg_group_type,

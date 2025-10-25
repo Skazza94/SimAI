@@ -52,7 +52,8 @@ enum ParallelStrategy {
     PP,
     EP,
     DP_EP,
-    NONE
+    NONE,
+    HDP
 };
 class Sys : public Callable {
  public:
@@ -94,6 +95,7 @@ class Sys : public Callable {
   std::vector<int>NVSwitchs; 
   int ngpus_per_node;
   GPUType gpu_type;
+  uint32_t dc_num;
 
   std::vector<CollectiveImplementation*>
       all_reduce_implementation_per_dimension;
@@ -246,7 +248,8 @@ class Sys : public Callable {
       GPUType _gpu_type,
       std::vector<int> _all_gpus,
       std::vector<int> _NVSwitchs,
-      int _ngpus_per_node);
+      int _ngpus_per_node,
+      uint32_t dc_num);
 
   void iterate();
   bool initialize_sys(std::string name);

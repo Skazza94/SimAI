@@ -122,9 +122,14 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
       cs.ExitSection();
       #endif
     }
+
+  // If lossy is enabled and the RTT is the maximum one, it is an interdc, place it in lossy class
+  // Maybe we should improve this heuristic
+  int pg = (lossy_class == 1 && pairRtt[src][dst] >= maxRtt) ? 4 : 3;
+
   int flow_id = request->flowTag.current_flow_id;
   bool nvls_on = request->flowTag.nvls_on;
-  int pg = 3, dport = 100;
+  int dport = 100;
   int send_lat = 6000;
   const char* send_lat_env = std::getenv("AS_SEND_LAT");
   if (send_lat_env) {
@@ -146,6 +151,10 @@ void SendFlow(int src, int dst, uint64_t maxPacketCount,
       has_win ? (global_t == 1 ? maxBdp : pairBdp[n.Get(src)][n.Get(dst)]) : 0,
       global_t == 1 ? maxRtt : pairRtt[src][dst], msg_handler, fun_arg, tag,
       src, dst);
+  if (pg == 4) {
+    // This is a lossy flow, let the QP know
+    clientHelper.SetAttribute("Lossy", BooleanValue(true));
+  }
   if(nvls_on) clientHelper.SetAttribute("NVLS_enable", UintegerValue (1));
   {
     #ifdef NS3_MTP
@@ -299,16 +308,12 @@ void notify_sender_packet_arrivered_receiver(int sender_node, int receiver_node,
 void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
   uint32_t sid = ip_to_node_id(q->sip), did = ip_to_node_id(q->dip);
   uint64_t base_rtt = pairRtt[sid][did], b = pairBw[sid][did];
-  uint32_t total_bytes =
+  uint64_t total_bytes =
       q->m_size +
       ((q->m_size - 1) / packet_payload_size + 1) *
           (CustomHeader::GetStaticWholeHeaderSize() -
            IntHeader::GetStaticSize()); 
   uint64_t standalone_fct = base_rtt + total_bytes * 8000000000lu / b;
-  fprintf(fout, "%08x %08x %u %u %lu %lu %lu %lu\n", q->sip.Get(), q->dip.Get(),
-          q->sport, q->dport, q->m_size, q->startTime.GetTimeStep(),
-          (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct);
-  fflush(fout);
 
   AstraSim::ncclFlowTag flowTag;
   uint64_t notify_size;
@@ -340,7 +345,13 @@ void qp_finish(FILE *fout, Ptr<RdmaQueuePair> q) {
     #ifdef NS3_MTP
     cs.ExitSection();
     #endif
+
+    fprintf(fout, "%08x %08x %u %u %u %u %d %d %lu %lu %lu %lu %d\n", q->sip.Get(), q->dip.Get(),
+          q->sport, q->dport, flowTag.sender_node, flowTag.receiver_node, flowTag.tag_id, flowTag.current_flow_id, q->m_size, q->startTime.GetTimeStep(),
+          (Simulator::Now() - q->startTime).GetTimeStep(), standalone_fct, (int)q->m_isLossy);
+    fflush(fout);
   }
+  
   notify_receiver_receive_data(sid, did, notify_size, flowTag);
 }
 

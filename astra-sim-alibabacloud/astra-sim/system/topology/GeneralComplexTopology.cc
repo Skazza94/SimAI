@@ -6,8 +6,10 @@ LICENSE file in the root directory of this source tree.
 #include "GeneralComplexTopology.hh"
 #include "DoubleBinaryTreeTopology.hh"
 #include "RingTopology.hh"
+#include <iostream>
 
 namespace AstraSim {
+std::ofstream* GeneralComplexTopology::log_file = nullptr;
 BasicLogicalTopology* GeneralComplexTopology::get_basic_topology_at_dimension(
     int dimension,
     ComType type) {
@@ -54,7 +56,82 @@ GeneralComplexTopology::GeneralComplexTopology(
           dimension_size[dim],
           (id % (offset * dimension_size[dim])) / offset,
           offset);
+          dimension_topology.push_back(ring);
+    } else if (
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::OneRing ||
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::OneDirect ||
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::OneHalvingDoubling) {
+      int total_npus = 1;
+      for (int d : dimension_size) {
+        total_npus *= d;
+      }
+      RingTopology* ring = new RingTopology(
+          RingTopology::Dimension::NA, id, total_npus, id % total_npus, 1);
       dimension_topology.push_back(ring);
+      return;
+    } else if (
+        collective_implementation[dim]->type ==
+        CollectiveImplementationType::DoubleBinaryTree) {
+      if (dim == last_dim) {
+        DoubleBinaryTreeTopology* DBT = new DoubleBinaryTreeTopology(
+            id, dimension_size[dim], id % offset, offset);
+        dimension_topology.push_back(DBT);
+      } else {
+        DoubleBinaryTreeTopology* DBT = new DoubleBinaryTreeTopology(
+            id,
+            dimension_size[dim],
+            (id - (id % (offset * dimension_size[dim]))) + (id % offset),
+            offset);
+        dimension_topology.push_back(DBT);
+      }
+    }
+    offset *= dimension_size[dim];
+  }
+}
+
+GeneralComplexTopology::GeneralComplexTopology(
+    int id,
+    std::vector<int> dimension_size,
+    std::vector<CollectiveImplementation*> collective_implementation,
+    int gpus_num,
+    int TP_size) {
+  int offset = 1;
+  int last_dim = collective_implementation.size() - 1;
+  for (int dim = 0; dim < collective_implementation.size(); dim++) {
+    if (collective_implementation[dim]->type ==
+            CollectiveImplementationType::Ring ||
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::Direct ||
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::HalvingDoubling ||
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::NcclFlowModel || 
+        collective_implementation[dim]->type ==
+            CollectiveImplementationType::NcclTreeFlowModel) {
+      if (dim == 2 && (id % TP_size != 0 || id >= gpus_num)) {
+        RingTopology* ring = new RingTopology(
+          RingTopology::Dimension::NA,
+          id,
+          dimension_size[dim],
+          0,
+          offset,
+          dim,
+          gpus_num,
+          TP_size
+        );
+        dimension_topology.push_back(ring);
+      } else {
+        RingTopology* ring = new RingTopology(
+          RingTopology::Dimension::NA,
+          id,
+          dimension_size[dim],
+          (id % (offset * dimension_size[dim])) / offset,
+          offset);
+          dimension_topology.push_back(ring);
+      }
     } else if (
         collective_implementation[dim]->type ==
             CollectiveImplementationType::OneRing ||

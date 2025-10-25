@@ -138,7 +138,8 @@ Sys::Sys(
     GPUType _gpu_type,
     std::vector<int>_all_gpus,
     std::vector<int>_NVSwitchs,
-    int _ngpus_per_node) {
+    int _ngpus_per_node,
+    uint32_t dc_num) {
   scheduler_unit = nullptr;
   vLevels = nullptr;
   memBus = nullptr;
@@ -179,6 +180,7 @@ Sys::Sys(
   this->all_gpus = _all_gpus;
   this->gpu_type = _gpu_type;
   this->ngpus_per_node = _ngpus_per_node;
+  this->dc_num = dc_num;
   if ((id + npu_offset + 1) > all_generators.size()) {
     all_generators.resize(id + npu_offset + 1);
   }
@@ -251,6 +253,9 @@ Sys::Sys(
       active_first_phase,
       concurrent_streams);
   vLevels = new QueueLevels(queues_per_dim, 0, NI->get_backend_type());
+
+  std::ofstream topology_file("./logical_topology_output.txt",std::ios::app);
+  GeneralComplexTopology::log_file = &topology_file;
 
   logical_topologies["AllReduce"] = new GeneralComplexTopology(
       id, physical_dims, all_reduce_implementation_per_dimension);
@@ -339,6 +344,7 @@ int Sys::break_dimension(int model_parallel_npu_group) {
       std::vector<int>::iterator levelIterator = queues_per_dim.begin();
       std::advance(levelIterator, dimension_to_break);
       queues_per_dim.insert(levelIterator, queues_per_dim[dimension_to_break]);
+      queues_per_dim.push_back(queues_per_dim[dimension_to_break]);
       scheduler_unit = new SchedulerUnit(
           this,
           queues_per_dim,
@@ -349,6 +355,10 @@ int Sys::break_dimension(int model_parallel_npu_group) {
 
       int first_subdim = model_parallel_npu_group / all_npus;
       int second_subdim = physical_dims[dimension_to_break] / first_subdim;
+      if (dc_num > 1) {
+         second_subdim = second_subdim / (int)dc_num;
+      }
+      int third_subdim = dc_num;
       std::vector<int> logical_dims;
 
       for (int dim = 0; dim < physical_dims.size(); dim++) {
@@ -357,55 +367,64 @@ int Sys::break_dimension(int model_parallel_npu_group) {
         } else {
           logical_dims.push_back(first_subdim);
           logical_dims.push_back(second_subdim);
+          if (dc_num > 1) {
+            logical_dims.push_back(third_subdim);
+          }
         }
       }
 
-      std::vector<CollectiveImplementation*>::iterator it =
-          all_reduce_implementation_per_dimension.begin();
-      if (all_reduce_implementation_per_dimension.size() > dimension_to_break) {
-        std::advance(it, dimension_to_break);
-      } else {
-        std::advance(it, all_reduce_implementation_per_dimension.size());
-      }
-      CollectiveImplementation* replicate =
-          (CollectiveImplementation*)(*it)->clone();
-      all_reduce_implementation_per_dimension.insert(it, replicate);
+      int iter_num = (dc_num > 1) ? 2 : 1;
+      for (int i=0; i<iter_num; i++) {
+        
+        std::vector<CollectiveImplementation*>::iterator it =
+            all_reduce_implementation_per_dimension.begin();
+        if (all_reduce_implementation_per_dimension.size() > dimension_to_break) {
+          std::advance(it, dimension_to_break);
+        } else {
+          std::advance(it, all_reduce_implementation_per_dimension.size());
+        }
+        CollectiveImplementation* replicate =
+            (CollectiveImplementation*)(*it)->clone();
+        all_reduce_implementation_per_dimension.insert(it, replicate);
 
-      it = reduce_scatter_implementation_per_dimension.begin();
-      if (reduce_scatter_implementation_per_dimension.size() >
-          dimension_to_break) {
-        std::advance(it, dimension_to_break);
-      } else {
-        std::advance(it, reduce_scatter_implementation_per_dimension.size());
-      }
-      replicate = (CollectiveImplementation*)(*it)->clone();
-      reduce_scatter_implementation_per_dimension.insert(it, replicate);
+        it = reduce_scatter_implementation_per_dimension.begin();
+        if (reduce_scatter_implementation_per_dimension.size() >
+            dimension_to_break) {
+          std::advance(it, dimension_to_break);
+        } else {
+          std::advance(it, reduce_scatter_implementation_per_dimension.size());
+        }
+        replicate = (CollectiveImplementation*)(*it)->clone();
+        reduce_scatter_implementation_per_dimension.insert(it, replicate);
 
-      it = all_gather_implementation_per_dimension.begin();
-      if (all_gather_implementation_per_dimension.size() > dimension_to_break) {
-        std::advance(it, dimension_to_break);
-      } else {
-        std::advance(it, all_gather_implementation_per_dimension.size());
-      }
-      replicate = (CollectiveImplementation*)(*it)->clone();
-      all_gather_implementation_per_dimension.insert(it, replicate);
+        it = all_gather_implementation_per_dimension.begin();
+        if (all_gather_implementation_per_dimension.size() > dimension_to_break) {
+          std::advance(it, dimension_to_break);
+        } else {
+          std::advance(it, all_gather_implementation_per_dimension.size());
+        }
+        replicate = (CollectiveImplementation*)(*it)->clone();
+        all_gather_implementation_per_dimension.insert(it, replicate);
 
-      it = all_to_all_implementation_per_dimension.begin();
-      if (all_to_all_implementation_per_dimension.size() > dimension_to_break) {
-        std::advance(it, dimension_to_break);
-      } else {
-        std::advance(it, all_to_all_implementation_per_dimension.size());
+        it = all_to_all_implementation_per_dimension.begin();
+        if (all_to_all_implementation_per_dimension.size() > dimension_to_break) {
+          std::advance(it, dimension_to_break);
+        } else {
+          std::advance(it, all_to_all_implementation_per_dimension.size());
+        }
+        replicate = (CollectiveImplementation*)(*it)->clone();
+        all_to_all_implementation_per_dimension.insert(it, replicate);
       }
-      replicate = (CollectiveImplementation*)(*it)->clone();
-      all_to_all_implementation_per_dimension.insert(it, replicate);
+
       logical_topologies["AllReduce"] = new GeneralComplexTopology(
-          id, logical_dims, all_reduce_implementation_per_dimension);
+          id, logical_dims, all_reduce_implementation_per_dimension, all_gpus[0], model_parallel_npu_group);
       logical_topologies["ReduceScatter"] = new GeneralComplexTopology(
-          id, logical_dims, reduce_scatter_implementation_per_dimension);
+          id, logical_dims, reduce_scatter_implementation_per_dimension, all_gpus[0], model_parallel_npu_group);
       logical_topologies["AllGather"] = new GeneralComplexTopology(
-          id, logical_dims, all_gather_implementation_per_dimension);
+          id, logical_dims, all_gather_implementation_per_dimension, all_gpus[0], model_parallel_npu_group);
       logical_topologies["AllToAll"] = new GeneralComplexTopology(
-          id, logical_dims, all_to_all_implementation_per_dimension);
+          id, logical_dims, all_to_all_implementation_per_dimension, all_gpus[0], model_parallel_npu_group);
+
       this->logical_broken_dims = logical_dims;
       this->dim_to_break = dimension_to_break;
       
@@ -1364,7 +1383,7 @@ bool Sys::mock_nccl_grobal_group_init(){
     int DP_size = all_gpus[0] / (TP_size * PP_size);
     int EP_size = workload->expert_parallel_npu_group;
     int DP_EP_size = DP_size / EP_size;
-    GlobalGroup = new MockNccl::MockNcclGroup(all_gpus[0],ngpus_per_node,TP_size,DP_size,PP_size,EP_size,DP_EP_size,NVSwitchs,gpu_type);
+    GlobalGroup = new MockNccl::MockNcclGroup(all_gpus[0],ngpus_per_node,TP_size,DP_size,PP_size,EP_size,DP_EP_size,NVSwitchs,gpu_type,dc_num);
     return true;
   }
 }
@@ -1385,6 +1404,10 @@ bool Sys::mock_nccl_comms_init(){
     if(DP_size > 1) {
       pComm = new MockNccl::MockNcclComm(id,MockNccl::GroupType::DP,GlobalGroup);
       mock_nccl_comms[DP] = pComm;
+      if (dc_num>1) {
+        pComm = new MockNccl::MockNcclComm(id,MockNccl::GroupType::HDP,GlobalGroup);
+        mock_nccl_comms[HDP] = pComm;
+      }
     }
     if(EP_size > 1 ){
       pComm = new MockNccl::MockNcclComm(id,MockNccl::GroupType::EP,GlobalGroup);

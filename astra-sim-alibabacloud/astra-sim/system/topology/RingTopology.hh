@@ -33,6 +33,10 @@ class RingTopology : public BasicLogicalTopology {
   int offset;
   int total_nodes_in_ring;
   int index_in_ring;
+  /* New constructor parameters declared as public variables to manage object functions*/
+  int gpus_num = -1;
+  int TP_size = -1;
+  int dim = -1;
   Dimension dimension;
   int get_num_of_nodes_in_dimension(int dimension) override;
   RingTopology(
@@ -41,6 +45,16 @@ class RingTopology : public BasicLogicalTopology {
       int total_nodes_in_ring,
       int index_in_ring,
       int offset);
+    RingTopology(
+      Dimension dimension,
+      int id,
+      int total_nodes_in_ring,
+      int index_in_ring,
+      int offset,
+      int dim,
+      int gpus_num,
+      int TP_size
+    );
   void find_neighbors();
   virtual int get_receiver_node(int node_id, Direction direction);
   virtual int get_sender_node(int node_id, Direction direction);

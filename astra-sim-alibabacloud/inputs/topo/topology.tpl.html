@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Rail-Aligned Topology</title>
+    <style>
+        body,
+        html,
+        #network {
+            width: 100%;
+            height: 100%;
+            max-width: 100%;
+            overflow: hidden;
+        }
+
+        body {
+            margin: 0;
+        }
+
+        .text {
+            font: 12px sans-serif;
+        }
+    </style>
+</head>
+<body>
+<div id="network"></div>
+
+<script src="https://d3js.org/d3.v4.js"></script>
+
+<script>
+    const nodePriority = {'dsw': 3, 'psw': 2, 'asw': 1, 'server': 0}
+    const computePositions = (data, offset) => {
+        const marginBetweenNodes = 120;
+
+        data = data.sort((a, b) => {
+            let [dcA, typeA, n1A, n2A] = a.label.split('_');
+            let [dcB, typeB, n1B, n2B] = b.label.split('_');
+
+            if (typeA !== typeB) 
+                return (nodePriority[typeA] > nodePriority[typeB]) ? 1 : -1;
+
+            let numberA = parseInt(n1A) * 10 + parseInt(n2A);
+            let numberB = parseInt(n1B) * 10 + parseInt(n2B);
+
+            return (numberA > numberB) ? 1 : ((numberB > numberA) ? -1 : 0);
+        });
+
+        const dataBySegment = {};
+        data.filter(
+            (x) => x.id.includes('server') || x.id.includes('asw')
+        ).forEach((x) => {
+            let [dc, type, segment, num] = x.label.split('_');
+
+            segment = parseInt(segment);
+
+            if (!(segment in dataBySegment)) {
+                dataBySegment[segment] = [];
+            }
+
+            dataBySegment[segment].push(x);    
+        });
+
+        const nOfSpines = data.filter((x) => x.label.includes("psw")).length;
+        let spineX = offset, spineY = 350;
+
+        data.filter(
+            (x) => x.id.includes('psw')
+        ).forEach((node) => {
+            node.x = spineX;
+            node.y = spineY;
+            spineX += marginBetweenNodes;
+        });
+
+        let torX = 0, torY = 600;
+        let serverX = 0, serverY = 850;
+        const marginBetweenSegments = 50;
+        for (const [segment, nodes] of Object.entries(dataBySegment)) {
+            const nOfTors = nodes.filter((x) => x.label.includes("asw")).length;
+            const nOfServers = nodes.filter((x) => x.label.includes("server")).length;
+            
+            torX = offset + ((spineX - offset - (nOfTors * marginBetweenNodes)) / 2);
+            serverX = torX + ((nOfTors * marginBetweenNodes) - (nOfServers * marginBetweenNodes)) / 2;
+
+            nodes.forEach((node) => {
+                if (node.id.includes("asw")) {
+                    node.x = torX;
+                    node.y = torY;
+                    torX += marginBetweenNodes;
+                }
+                if (node.id.includes("server")) {
+                    node.x = serverX;
+                    node.y = serverY;
+                    serverX += marginBetweenNodes;
+                }
+            });
+        }
+
+        const nOfExits = data.filter((x) => x.label.includes("dsw")).length;
+        let exitX = offset + ((spineX - offset - (nOfExits * marginBetweenNodes)) / 2); exitY = 100;
+
+        data.filter(
+            (x) => x.id.includes('dsw')
+        ).forEach((node) => {
+            node.x = exitX;
+            node.y = exitY;
+            exitX += marginBetweenNodes;
+        });
+
+        return [spineX + 80, serverY];
+    };
+    const centerX = (coord) => {
+        return coord - (rectSizeX / 2);
+    };
+    const centerY = (coord) => {
+        return coord - (rectSizeY / 2);
+    };
+    const findNode = (nodeName) => {
+        return data.nodes.find((x) => x.label == nodeName);
+    };
+    const getNodeColor = (node, colorScale, colorMap) => {
+        let [dc, type, segment, num] = node.split('_');
+        return colorMap[Math.round(colorScale(nodePriority[type]))];
+    };
+</script>
+
+<script>
+    const rectSizeX = 100, rectSizeY = 35;
+
+    const data = "%GRAPH%";
+
+    const nodesByDc = {};
+    data.nodes.forEach(x => {
+        let [dc, type, n1, n2] = x.label.split('_');
+        const dcNum = parseInt(dc.replace('dc', ''));
+
+        if(!(dcNum in nodesByDc)) {
+            nodesByDc[dcNum] = [];  
+        }
+
+        nodesByDc[dcNum].push(x);
+    });
+
+    const marginBetweenDCs = 200;
+    let dcOffset = 0;
+    for (const dc of Object.keys(nodesByDc).sort()) {
+        const nodes = nodesByDc[dc];
+
+        const [maxX, maxY] = computePositions(nodes, dcOffset);
+
+        dcOffset = maxX + 200;
+    }
+
+    const colorMap = ["#6e40aa", "#6d41ab", "#6d41ad", "#6d42ae", "#6c43af", "#6c43b0", "#6b44b2", "#6b45b3", "#6a46b4", "#6a46b5", "#6a47b7", "#6948b8", "#6849b9", "#684aba", "#674abb", "#674bbd", "#664cbe", "#664dbf", "#654ec0", "#654fc1", "#6450c2", "#6350c3", "#6351c4", "#6252c5", "#6153c6", "#6154c7", "#6055c8", "#5f56c9", "#5f57ca", "#5e58cb", "#5d59cc", "#5c5acd", "#5c5bce", "#5b5ccf", "#5a5dd0", "#595ed1", "#595fd1", "#5860d2", "#5761d3", "#5662d4", "#5663d5", "#5564d5", "#5465d6", "#5366d7", "#5267d7", "#5168d8", "#5169d9", "#506ad9", "#4f6bda", "#4e6cda", "#4d6ddb", "#4c6edb", "#4b70dc", "#4b71dc", "#4a72dd", "#4973dd", "#4874de", "#4775de", "#4676df", "#4577df", "#4479df", "#447adf", "#437be0", "#427ce0", "#417de0", "#407ee0", "#3f80e1", "#3e81e1", "#3d82e1", "#3d83e1", "#3c84e1", "#3b86e1", "#3a87e1", "#3988e1", "#3889e1", "#378ae1", "#378ce1", "#368de1", "#358ee1", "#348fe1", "#3390e1", "#3292e1", "#3293e1", "#3194e0", "#3095e0", "#2f96e0", "#2e98e0", "#2e99df", "#2d9adf", "#2c9bdf", "#2b9cde", "#2b9ede", "#2a9fdd", "#29a0dd", "#29a1dd", "#28a2dc", "#27a4dc", "#26a5db", "#26a6db", "#25a7da", "#25a8d9", "#24aad9", "#23abd8", "#23acd8", "#22add7", "#22aed6", "#21afd5", "#21b1d5", "#20b2d4", "#20b3d3", "#1fb4d2", "#1fb5d2", "#1eb6d1", "#1eb8d0", "#1db9cf", "#1dbace", "#1dbbcd", "#1cbccc", "#1cbdcc", "#1cbecb", "#1bbfca", "#1bc0c9", "#1bc2c8", "#1ac3c7", "#1ac4c6", "#1ac5c5", "#1ac6c4", "#1ac7c2", "#1ac8c1", "#19c9c0", "#19cabf", "#19cbbe", "#19ccbd", "#19cdbc", "#19cebb", "#19cfb9", "#19d0b8", "#19d1b7", "#19d2b6", "#19d3b5", "#1ad4b4", "#1ad5b2", "#1ad5b1", "#1ad6b0", "#1ad7af", "#1bd8ad", "#1bd9ac", "#1bdaab", "#1bdbaa", "#1cdba8", "#1cdca7", "#1cdda6", "#1ddea4", "#1ddfa3", "#1edfa2", "#1ee0a0", "#1fe19f", "#1fe29e", "#20e29d", "#20e39b", "#21e49a", "#22e599", "#22e597", "#23e696", "#24e795", "#24e793", "#25e892", "#26e891", "#27e98f", "#27ea8e", "#28ea8d", "#29eb8c", "#2aeb8a", "#2bec89", "#2cec88", "#2ded87", "#2eed85", "#2fee84", "#30ee83", "#31ef82", "#32ef80", "#33f07f", "#34f07e", "#35f07d", "#37f17c", "#38f17a", "#39f279", "#3af278", "#3bf277", "#3df376", "#3ef375", "#3ff374", "#41f373", "#42f471", "#43f470", "#45f46f", "#46f46e", "#48f56d", "#49f56c", "#4bf56b", "#4cf56a", "#4ef56a", "#4ff669", "#51f668", "#52f667", "#54f666", "#55f665", "#57f664", "#59f664", "#5af663", "#5cf662", "#5ef661", "#5ff761", "#61f760", "#63f75f", "#64f75f", "#66f75e", "#68f75d", "#6af75d", "#6bf65c", "#6df65c", "#6ff65b", "#71f65b", "#73f65a", "#74f65a", "#76f659", "#78f659", "#7af659", "#7cf658", "#7ef658", "#80f558", "#81f558", "#83f557", "#85f557", "#87f557", "#89f557", "#8bf457", "#8df457", "#8ff457", "#91f457", "#93f457", "#94f357", "#96f357", "#98f357", "#9af357", "#9cf257", "#9ef258", "#a0f258", "#a2f258", "#a4f158", "#a6f159", "#a8f159", "#aaf159", "#abf05a", "#adf05a", "#aff05b"];
+    const valuesDomain = Object.values(nodePriority).sort();
+    const colorScale = d3.scalePoint().domain(valuesDomain).range([0, colorMap.length - 1]);
+
+    const network = d3.select('#network');
+
+    const svg = network.append('svg')
+        .attr('width', "100%")
+        .attr('height', "100%")
+        .attr("viewBox", [0, 0, dcOffset, 800])
+        .call(d3.zoom()
+            .on("zoom", () => {
+                g.attr("transform", d3.event.transform);
+            })
+        );
+
+    const g = svg.append('g')
+        .attr('width', "100%")
+        .attr('height', "100%");
+
+    const edges = g.selectAll(".edges")
+        .data(data.links)
+        .enter()
+        .append("line")
+        .attr("class", "edges")
+        .attr("x1", (d) => findNode(d.source).x)
+        .attr("y1", (d) => findNode(d.source).y)
+        .attr("x2", (d) => findNode(d.target).x)
+        .attr("y2", (d) => findNode(d.target).y)
+        .attr("stroke-width", 1)
+        .attr("stroke", "black");
+
+    g.selectAll(".edgepath")
+        .data(data.links)
+        .enter()
+        .append('path')
+        .attr("class", "edgepath")
+        .attr("d", (d) => {
+            const startNode = findNode(d.source);
+            const endNode = findNode(d.target);
+            return 'M ' + startNode.x + ' ' + startNode.y + ' L ' + endNode.x + ' ' + endNode.y;
+        })
+        .attr("fill-opacity", 0)
+        .attr("stroke-opacity", 0)
+        .attr("id", (d, i) => "edgepath-" + d.source + "-" + d.target)
+        .style("pointer-events", "none");
+
+    const edgeLabelsShadow = g.selectAll(".edgelabels-shadow")
+        .data(data.links)
+        .enter()
+        .append('text')
+        .attr("class", "text edgelabels-shadow")
+        .attr("dy", 4)
+        .attr("stroke", "white")
+        .attr("stroke-width", 3)
+        .attr("fill", "white")
+        .attr("font-size", "14px")
+        .style("pointer-events", "none")
+        .style("text-anchor", "middle")
+        .append('textPath')
+        .text((d, i) => d.value)
+        .attr("startOffset", "30%")
+        .attr('xlink:href', (d, i) => "#edgepath-" + d.source + "-" + d.target)
+        .style("opacity", 0)
+        .style("pointer-events", "none");
+
+    const edgeLabels = g.selectAll(".edgelabels")
+        .data(data.links)
+        .enter()
+        .append('text')
+        .attr("class", "text edgelabels")
+        .attr("dy", 4)
+        .attr("font-size", "14px")
+        .style("pointer-events", "none")
+        .style("text-anchor", "middle")
+        .append('textPath')
+        .text((d, i) => d.value)
+        .attr("startOffset", "30%")
+        .attr('xlink:href', (d, i) => "#edgepath-" + d.source + "-" + d.target)
+        .style("opacity", 0)
+        .style("pointer-events", "none");
+
+    const nodes = g.selectAll(".nodes")
+        .data(data.nodes)
+        .enter()
+        .append("rect")
+        .attr("class", (d) => "nodes " + d.id)
+        .attr("x", (d) => centerX(d.x))
+        .attr("y", (d) => centerY(d.y))
+        .attr("width", (d) => rectSizeX)
+        .attr("height", (d) => rectSizeY)
+        .attr("fill", (d) => getNodeColor(d.label, colorScale, colorMap))
+        .attr("fill-opacity", 1);
+
+    const nodeLabelsShadow = g.selectAll(".nodelabels-shadow")
+        .data(data.nodes)
+        .enter()
+        .append("text")
+        .text((d) => d.label)
+        .attr("class", "text nodelabels-shadow")
+        .attr("x", (d) => d.x)
+        .attr("y", (d) => d.y)
+        .attr("dy", "3px")
+        .attr("stroke", "black")
+        .attr("stroke-width", 2)
+        .attr("fill", "black")
+        .style("text-anchor", "middle");
+
+    const nodeLabels = g.selectAll(".nodelabels")
+        .data(data.nodes)
+        .enter()
+        .append("text")
+        .text((d) => d.label)
+        .attr("class", "text nodelabels")
+        .attr("x", (d) => d.x)
+        .attr("y", (d) => d.y)
+        .attr("dy", "3px")
+        .attr("fill", "white")
+        .style("text-anchor", "middle");
+
+    const transitionDuration = 250;
+    let focusedNode = null;
+    const focusNode = nodeName => {
+        edges
+            .transition()
+            .duration(transitionDuration)
+            .style('opacity', x => {
+                return x.source === nodeName ? 1 : 0.1;
+            });
+
+        edgeLabelsShadow
+            .transition()
+            .duration(transitionDuration)
+            .text((d, i) => d.value)
+            .style('opacity', x => {
+                return x.source === nodeName ? 1 : 0;
+            });
+
+        edgeLabels
+            .transition()
+            .duration(transitionDuration)
+            .text((d, i) => d.value)
+            .style('opacity', x => {
+                return x.source === nodeName ? 1 : 0;
+            });
+
+        nodes
+            .transition()
+            .duration(transitionDuration)
+            .style('opacity', d => d.label === nodeName ? 1 : 0.5);
+
+        nodeLabelsShadow
+            .transition()
+            .duration(transitionDuration)
+            .style('opacity', d => d.label === nodeName ? 1 : 0.5);
+
+        nodeLabels
+            .transition()
+            .duration(transitionDuration)
+            .style('opacity', d => d.label === nodeName ? 1 : 0.5);
+
+        focusedNode = nodeName;
+    };
+
+    nodeLabels.on('click', x => {
+        focusNode(x.label);
+    });
+
+    const clearNodeFocus = () => {
+        edges.transition().duration(transitionDuration).style('opacity', 1).attr("stroke-width", 1).attr("stroke", "black");
+        edgeLabelsShadow.transition().duration(transitionDuration).style('opacity', 0).text((d, i) => d.value);
+        edgeLabels.transition().duration(transitionDuration).style('opacity', 0).text((d, i) => d.value);
+        nodes.transition().duration(transitionDuration).style('opacity', 1);
+        nodeLabelsShadow.transition().duration(transitionDuration).style('opacity', 1);
+        nodeLabels.transition().duration(transitionDuration).style('opacity', 1);
+
+        focusedNode = null;
+    };
+    d3.select("body").on("keydown", () => {
+        if (d3.event.keyCode === 67) {
+            clearNodeFocus();
+        }
+    });
+
+</script>
+</body>
+</html>

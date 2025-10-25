@@ -45,7 +45,8 @@ namespace MockNccl {
     PP,
     EP,
     DP_EP,
-    NONE
+    NONE,
+    HDP
   };
   struct ncclInfo {
     ncclFunc_t coll;
@@ -119,7 +120,7 @@ namespace MockNccl {
     };
    public:
     MockNcclGroup(){}
-    MockNcclGroup(int _ngpus,int _gpus_per_nodes, int _TP_size,int _DP_size,int _PP_size,int _EP_size,int _DP_EP_size,std::vector<int>_NVSwitch,GPUType _gpu_type);
+    MockNcclGroup(int _ngpus,int _gpus_per_nodes, int _TP_size,int _DP_size,int _PP_size,int _EP_size,int _DP_EP_size,std::vector<int>_NVSwitch,GPUType _gpu_type, uint32_t dc_num);
     ~MockNcclGroup(){};
 
     std::map<std::pair<int,GroupType>,int> GroupIndex;
@@ -130,6 +131,7 @@ namespace MockNccl {
     std::map<int,TreeChannels> Alltreechannels;
     std::map<int,TreeChannels> AllNVLSchannels;
 
+    uint32_t dc_num;
     int g_flow_id;
     GPUType gpu_type;
     std::map<std::string,int> FlowName2nums;
